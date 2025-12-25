@@ -22,15 +22,35 @@ export async function POST(req: Request) {
   });
 
   try {
-    const { image } = await req.json();
+    const body = await req.json();
+    const image = body?.image;
 
-    if (!image) {
-      return Response.json({ error: "No se envió imagen" }, { status: 400 });
+    if (!image || typeof image !== "string") {
+      return Response.json({ error: "No se envió imagen válida" }, { status: 400 });
     }
 
-    // Limitar tamaño
-    if (image.length > 2_000_000) {
-      return Response.json({ error: "Imagen demasiado grande" }, { status: 413 });
+    // 1️⃣ Extraer MIME REAL
+    const mimeMatch = image.match(/^data:(image\/\w+);base64,/);
+    const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
+
+    // 2️⃣ Extraer Base64 limpio
+    const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
+
+    // 3️⃣ Convertir a buffer REAL
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(base64Data, "base64");
+    } catch {
+      return Response.json({ error: "Base64 inválido" }, { status: 400 });
+    }
+
+    // 4️⃣ Validar tamaño REAL (bytes)
+    const MAX_BYTES = 1_500_000; // 1.5 MB reales
+    if (buffer.byteLength > MAX_BYTES) {
+      return Response.json(
+        { error: "Imagen demasiado pesada, reduzca resolución" },
+        { status: 413 }
+      );
     }
 
     const prompt = `
@@ -56,25 +76,36 @@ No uses inglés bajo ninguna circunstancia.
       { text: prompt },
       {
         inlineData: {
-          mimeType: "image/jpeg",
-          data: image.replace(/^data:image\/\w+;base64,/, ""),
+          mimeType,
+          data: base64Data,
         },
       },
     ]);
 
     const rawText = result.response.text();
 
-    // extraer JSON
+    // 5️⃣ Extraer JSON de forma segura
     const jsonStart = rawText.indexOf("{");
     const jsonEnd = rawText.lastIndexOf("}");
+
+    if (jsonStart === -1 || jsonEnd === -1) {
+      console.error("Respuesta Gemini:", rawText);
+      return Response.json(
+        { error: "La IA no devolvió un JSON válido" },
+        { status: 502 }
+      );
+    }
+
     const cleanJson = rawText.slice(jsonStart, jsonEnd + 1);
 
     const parsed = plantDiseaseSchema.parse(JSON.parse(cleanJson));
 
     return Response.json(parsed);
-
   } catch (error) {
-    console.error("❌ Error:", error);
-    return Response.json({ error: "Error analizando imagen" }, { status: 500 });
+    console.error("❌ Error analizando imagen:", error);
+    return Response.json(
+      { error: "Error analizando imagen" },
+      { status: 500 }
+    );
   }
 }
