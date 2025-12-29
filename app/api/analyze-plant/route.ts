@@ -1,5 +1,75 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { z } from "zod";
+import sharp from "sharp";
+
+/* ===============================
+   RATE LIMIT POR USUARIO (IP)
+   =============================== */
+
+type UserUsage = {
+  count: number;
+  firstRequestAt: number;
+};
+
+const USER_LIMIT = 2;
+const WINDOW_MS = 60_000;
+const usageMap = new Map<string, UserUsage>();
+
+function checkRateLimit(userId: string) {
+  const now = Date.now();
+  const usage = usageMap.get(userId);
+
+  if (!usage || now - usage.firstRequestAt > WINDOW_MS) {
+    usageMap.set(userId, { count: 1, firstRequestAt: now });
+    return { allowed: true };
+  }
+
+  if (usage.count < USER_LIMIT) {
+    usage.count++;
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    response: {
+      rateLimited: true,
+      message:
+        "Ya realizaste 2 análisis. Espera 1 minuto o mejora la calidad de la foto.",
+    },
+  };
+}
+
+/* ===============================
+   FILTRO DE QUÍMICOS
+   =============================== */
+
+const FORBIDDEN_TERMS = [
+  "fungicida",
+  "pesticida",
+  "insecticida",
+  "herbicida",
+  "químico",
+  "quimico",
+  "sintético",
+  "sintetico",
+  "glifosato",
+  "carbendazim",
+  "clorpirifos",
+  "imidacloprid",
+  "mancozeb",
+  "oxicloruro",
+  "metalaxil",
+];
+
+function containsForbiddenTreatment(text: string) {
+  return FORBIDDEN_TERMS.some(t =>
+    text.toLowerCase().includes(t)
+  );
+}
+
+/* ===============================
+   ZOD
+   =============================== */
 
 const plantDiseaseSchema = z.object({
   disease: z.string(),
@@ -10,55 +80,66 @@ const plantDiseaseSchema = z.object({
 });
 
 export async function POST(req: Request) {
-  const apiKey = process.env.GEMINI_API_KEY;
-
-  if (!apiKey) {
-    return Response.json({ error: "Falta clave de API" }, { status: 500 });
-  }
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
-  });
-
   try {
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0] ??
+      "unknown";
+
+    const rateLimit = checkRateLimit(ip);
+    if (!rateLimit.allowed) {
+      return Response.json(rateLimit.response, { status: 200 });
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return Response.json(
+        { error: "Falta GEMINI_API_KEY" },
+        { status: 500 }
+      );
+    }
+
     const body = await req.json();
     const image = body?.image;
 
-    if (!image || typeof image !== "string") {
-      return Response.json({ error: "No se envió imagen válida" }, { status: 400 });
-    }
-
-    // 1️⃣ Extraer MIME REAL
-    const mimeMatch = image.match(/^data:(image\/\w+);base64,/);
-    const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
-
-    // 2️⃣ Extraer Base64 limpio
-    const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
-
-    // 3️⃣ Convertir a buffer REAL
-    let buffer: Buffer;
-    try {
-      buffer = Buffer.from(base64Data, "base64");
-    } catch {
-      return Response.json({ error: "Base64 inválido" }, { status: 400 });
-    }
-
-    // 4️⃣ Validar tamaño REAL (bytes)
-    const MAX_BYTES = 1_500_000; // 1.5 MB reales
-    if (buffer.byteLength > MAX_BYTES) {
+    if (typeof image !== "string") {
       return Response.json(
-        { error: "Imagen demasiado pesada, reduzca resolución" },
+        { error: "Imagen inválida" },
+        { status: 400 }
+      );
+    }
+
+    const match = image.match(/^data:(image\/\w+);base64,(.+)$/);
+    if (!match) {
+      return Response.json(
+        { error: "Formato base64 inválido" },
+        { status: 400 }
+      );
+    }
+
+    const [, mimeType, base64Data] = match;
+    const inputBuffer = Buffer.from(base64Data, "base64");
+
+    if (inputBuffer.byteLength > 1_500_000) {
+      return Response.json(
+        { error: "Imagen demasiado pesada" },
         { status: 413 }
       );
     }
 
+    const normalizedBuffer = await sharp(inputBuffer)
+      .rotate()
+      .resize(1024, 1024, { fit: "inside" })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash",
+    });
+
     const prompt = `
 Analiza la planta de la imagen.
-
-Responde SIEMPRE en español.
-
-Devuelve SOLO un JSON válido con exactamente estas propiedades:
+Responde SOLO con un JSON válido en español.
 
 {
   "disease": string,
@@ -68,8 +149,8 @@ Devuelve SOLO un JSON válido con exactamente estas propiedades:
   "severity": "Leve" | "Moderada" | "Severa"
 }
 
-No agregues explicaciones ni texto fuera del JSON.
-No uses inglés bajo ninguna circunstancia.
+Tratamiento EXCLUSIVAMENTE orgánico.
+No menciones químicos ni marcas.
 `;
 
     const result = await model.generateContent([
@@ -77,34 +158,36 @@ No uses inglés bajo ninguna circunstancia.
       {
         inlineData: {
           mimeType,
-          data: base64Data,
+          data: normalizedBuffer.toString("base64"),
         },
       },
     ]);
 
-    const rawText = result.response.text();
+    const raw = result.response.text();
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
 
-    // 5️⃣ Extraer JSON de forma segura
-    const jsonStart = rawText.indexOf("{");
-    const jsonEnd = rawText.lastIndexOf("}");
-
-    if (jsonStart === -1 || jsonEnd === -1) {
-      console.error("Respuesta Gemini:", rawText);
+    if (start === -1 || end === -1) {
       return Response.json(
-        { error: "La IA no devolvió un JSON válido" },
+        { error: "Respuesta inválida de la IA" },
         { status: 502 }
       );
     }
 
-    const cleanJson = rawText.slice(jsonStart, jsonEnd + 1);
+    const parsed = plantDiseaseSchema.parse(
+      JSON.parse(raw.slice(start, end + 1))
+    );
 
-    const parsed = plantDiseaseSchema.parse(JSON.parse(cleanJson));
+    if (containsForbiddenTreatment(parsed.treatment)) {
+      parsed.treatment =
+        "Aplicar manejo orgánico: poda sanitaria, extractos vegetales (neem, ajo, cola de caballo) y mejorar nutrición.";
+    }
 
     return Response.json(parsed);
   } catch (error) {
-    console.error("❌ Error analizando imagen:", error);
+    console.error(error);
     return Response.json(
-      { error: "Error analizando imagen" },
+      { error: "Error interno del servidor" },
       { status: 500 }
     );
   }
