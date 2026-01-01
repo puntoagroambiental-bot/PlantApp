@@ -1,18 +1,18 @@
-import type React from "react"
 import type { Metadata } from "next"
-import { Geist, Geist_Mono } from "next/font/google"
+import { Inter } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
 import "./globals.css"
 
-const _geist = Geist({ subsets: ["latin"] })
-const _geistMono = Geist_Mono({ subsets: ["latin"] })
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+})
 
-// Metadata personalizada (PWA incluido)
 export const metadata: Metadata = {
   title: "plantaAPP - Identifica enfermedades en plantas",
   description:
     "Guía para identificar enfermedades en las plantas con inteligencia artificial",
-  generator: "v0.app",
   icons: {
     icon: [
       {
@@ -30,23 +30,22 @@ export const metadata: Metadata = {
     ],
     apple: "/apple-icon.png",
   },
-  manifest: "/manifest.json",            // ← IMPORTANTE PARA PWA
-  themeColor: "#4CAF50",                 // ← Color del sistema
+  manifest: "/manifest.json",
+  themeColor: "#4CAF50",
 }
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode
-}>) {
+}) {
   return (
     <html lang="es">
       <head>
-        <link rel="manifest" href="/manifest.json" />    {/* ← REFORZAMOS */}
-        <meta name="theme-color" content="#4CAF50" />     {/* ← PWA */}
+        <link rel="manifest" href="/manifest.json" />
+        <meta name="theme-color" content="#4CAF50" />
       </head>
-
-      <body className={`font-sans antialiased`}>
+      <body className={`${inter.className} antialiased`}>
         {children}
         <Analytics />
       </body>
