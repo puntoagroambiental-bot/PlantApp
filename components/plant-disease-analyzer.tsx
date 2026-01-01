@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -16,20 +15,56 @@ interface AnalysisResult {
   severity: "Leve" | "Moderada" | "Severa"
 }
 
+/* ===============================
+   🔥 COMPRESIÓN EN EL CLIENTE
+   =============================== */
+async function compressImage(file: File): Promise<string> {
+  const bitmap = await createImageBitmap(file)
+
+  const MAX_SIZE = 1024 // clave para celulares baratos
+  const scale = Math.min(
+    MAX_SIZE / bitmap.width,
+    MAX_SIZE / bitmap.height,
+    1
+  )
+
+  const canvas = document.createElement("canvas")
+  canvas.width = bitmap.width * scale
+  canvas.height = bitmap.height * scale
+
+  const ctx = canvas.getContext("2d")!
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+
+  // JPEG liviano
+  return canvas.toDataURL("image/jpeg", 0.7)
+}
+
 export function PlantDiseaseAnalyzer() {
   const [selectedImage, setSelectedImage] = useState<string | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
 
+  /* ===============================
+     📸 MANEJO DE IMAGEN
+     =============================== */
   const handleImageUpload = async (file: File) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      setSelectedImage(reader.result as string)
-      setAnalysisResult(null)
+    // Filtro duro para gama baja
+    if (file.size > 6_000_000) {
+      alert("La imagen es muy pesada. Acércate más a la planta y vuelve a intentar.")
+      return
     }
-    reader.readAsDataURL(file)
+
+    try {
+      const compressed = await compressImage(file)
+      setSelectedImage(compressed)
+      setAnalysisResult(null)
+    } catch (err) {
+      console.error("Error al procesar imagen", err)
+      alert("No se pudo procesar la imagen")
+    }
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -39,8 +74,11 @@ export function PlantDiseaseAnalyzer() {
     }
   }
 
+  /* ===============================
+     🤖 ANÁLISIS IA
+     =============================== */
   const analyzeImage = async () => {
-    if (!selectedImage) return
+    if (!selectedImage || isAnalyzing) return
 
     setIsAnalyzing(true)
     try {
@@ -53,15 +91,18 @@ export function PlantDiseaseAnalyzer() {
       const result = await response.json()
       setAnalysisResult(result)
     } catch (error) {
-      console.error("[v0] Error analyzing image:", error)
+      console.error("Error analyzing image:", error)
+      alert("Error al analizar la imagen")
     } finally {
       setIsAnalyzing(false)
     }
   }
 
   const handleWhatsAppConsult = () => {
-    const phoneNumber = "573174751231" // Formato internacional sin +
-    const message = encodeURIComponent("¡Hola! Necesito consultar con un experto sobre una enfermedad en mis plantas.")
+    const phoneNumber = "573174751231"
+    const message = encodeURIComponent(
+      "¡Hola! Necesito consultar con un experto sobre una enfermedad en mis plantas."
+    )
     window.open(`https://wa.me/${phoneNumber}?text=${message}`, "_blank")
   }
 
@@ -84,38 +125,43 @@ export function PlantDiseaseAnalyzer() {
       <div className="text-center mb-8">
         <div className="flex items-center justify-center gap-3 mb-4">
           <Leaf className="h-12 w-12 text-primary" />
-          <h1 className="text-4xl font-bold text-balance text-primary">plantaAPP</h1>
+          <h1 className="text-4xl font-bold text-primary">plantaAPP</h1>
         </div>
-        <p className="text-lg text-muted-foreground">Ayuda para identificar enfermedades en las plantas</p>
+        <p className="text-lg text-muted-foreground">
+          Ayuda para identificar enfermedades en las plantas
+        </p>
       </div>
 
-      {/* Main Card */}
       <Card className="shadow-lg">
         <CardHeader>
           <CardTitle className="text-2xl">Análisis de Enfermedades</CardTitle>
-          <CardDescription>Sube o toma una foto de tu planta para identificar posibles enfermedades</CardDescription>
+          <CardDescription>
+            Toma o sube una foto clara de la planta
+          </CardDescription>
         </CardHeader>
+
         <CardContent className="space-y-6">
-          {/* Image Upload Section */}
           {!selectedImage ? (
-            <div className="border-2 border-dashed border-border rounded-lg p-12 text-center space-y-4">
-              <div className="flex justify-center">
-                <Leaf className="h-16 w-16 text-muted-foreground" />
-              </div>
-              <div>
-                <p className="text-lg font-medium mb-2">Captura o sube una imagen</p>
-                <p className="text-sm text-muted-foreground">JPG, PNG o WEBP (máx. 10MB)</p>
-              </div>
+            <div className="border-2 border-dashed rounded-lg p-12 text-center space-y-4">
+              <Leaf className="h-16 w-16 mx-auto text-muted-foreground" />
+              <p className="text-lg font-medium">Captura o sube una imagen</p>
+              <p className="text-sm text-muted-foreground">
+                Recomendado: buena luz, sin zoom
+              </p>
+
               <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                <Button onClick={() => cameraInputRef.current?.click()} size="lg" className="gap-2">
-                  <Camera className="h-5 w-5" />
-                  Tomar Foto
+                <Button onClick={() => cameraInputRef.current?.click()} size="lg">
+                  <Camera className="mr-2 h-5 w-5" /> Tomar Foto
                 </Button>
-                <Button onClick={() => fileInputRef.current?.click()} variant="outline" size="lg" className="gap-2">
-                  <Upload className="h-5 w-5" />
-                  Subir Imagen
+                <Button
+                  onClick={() => fileInputRef.current?.click()}
+                  variant="outline"
+                  size="lg"
+                >
+                  <Upload className="mr-2 h-5 w-5" /> Subir Imagen
                 </Button>
               </div>
+
               <input
                 ref={cameraInputRef}
                 type="file"
@@ -124,42 +170,52 @@ export function PlantDiseaseAnalyzer() {
                 onChange={handleFileSelect}
                 className="hidden"
               />
-              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileSelect} className="hidden" />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
             </div>
           ) : (
             <div className="space-y-4">
-              {/* Image Preview */}
               <div className="relative aspect-video rounded-lg overflow-hidden bg-muted">
                 <Image
-                  src={selectedImage || "/placeholder.svg"}
+                  src={selectedImage}
                   alt="Planta seleccionada"
                   fill
                   className="object-contain"
                 />
               </div>
 
-              {/* Action Buttons */}
               <div className="flex flex-col sm:flex-row gap-3">
-                <Button onClick={analyzeImage} disabled={isAnalyzing} className="flex-1 gap-2" size="lg">
+                <Button
+                  onClick={analyzeImage}
+                  disabled={isAnalyzing}
+                  size="lg"
+                  className="flex-1"
+                >
                   {isAnalyzing ? (
                     <>
-                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                       Analizando...
                     </>
                   ) : (
                     <>
-                      <Leaf className="h-5 w-5" />
+                      <Leaf className="mr-2 h-5 w-5" />
                       Analizar Planta
                     </>
                   )}
                 </Button>
+
                 <Button
+                  variant="outline"
+                  size="lg"
                   onClick={() => {
                     setSelectedImage(null)
                     setAnalysisResult(null)
                   }}
-                  variant="outline"
-                  size="lg"
                 >
                   Nueva Foto
                 </Button>
@@ -167,71 +223,51 @@ export function PlantDiseaseAnalyzer() {
             </div>
           )}
 
-          {/* Analysis Results */}
           {analysisResult && (
             <Card className="bg-muted/50">
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Leaf className="h-5 w-5 text-primary" />
-                  Resultado del Análisis
-                </CardTitle>
+                <CardTitle>Resultado del Análisis</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div>
-                  <h3 className="font-semibold text-lg mb-1">{analysisResult.disease}</h3>
-                  <p className="text-sm text-muted-foreground mb-2">
-                    Confianza: {Math.round(analysisResult.confidence * 100)}%
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">Severidad:</span>
-                    <span className={`text-sm font-semibold ${getSeverityColor(analysisResult.severity)}`}>
-                      {analysisResult.severity}
-                    </span>
-                  </div>
-                </div>
-
-                <div>
-                  <h4 className="font-semibold mb-2">Descripción:</h4>
-                  <p className="text-sm leading-relaxed">{analysisResult.description}</p>
-                </div>
-
-                <div>
-                  <h4 className="font-semibold mb-2">Tratamiento Recomendado:</h4>
-                  <p className="text-sm leading-relaxed">{analysisResult.treatment}</p>
-                </div>
+                <h3 className="text-lg font-semibold">
+                  {analysisResult.disease}
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  Confianza: {Math.round(analysisResult.confidence * 100)}%
+                </p>
+                <p className={getSeverityColor(analysisResult.severity)}>
+                  Severidad: {analysisResult.severity}
+                </p>
+                <p>{analysisResult.description}</p>
+                <p>
+                  <strong>Tratamiento:</strong> {analysisResult.treatment}
+                </p>
               </CardContent>
             </Card>
           )}
 
-          {/* WhatsApp Consultation */}
-          <Card className="bg-primary/5 border-primary/20">
-            <CardContent className="pt-6">
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-                <div className="text-center sm:text-left">
-                  <h3 className="font-semibold text-lg mb-1">¿Necesitas ayuda profesional?</h3>
-                  <p className="text-sm text-muted-foreground">Consulta con un experto en plantas</p>
-                </div>
-                <Button
-                  onClick={handleWhatsAppConsult}
-                  size="lg"
-                  className="gap-2 bg-[#25D366] hover:bg-[#20BA5A] text-white"
-                >
-                  <MessageCircle className="h-5 w-5" />
-                  Consulta con un Experto
-                </Button>
+          <Card className="bg-primary/5">
+            <CardContent className="pt-6 flex flex-col sm:flex-row justify-between items-center gap-4">
+              <div>
+                <h3 className="font-semibold text-lg">
+                  ¿Necesitas ayuda profesional?
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  Consulta con un experto
+                </p>
               </div>
+              <Button
+                onClick={handleWhatsAppConsult}
+                size="lg"
+                className="bg-[#25D366] text-white"
+              >
+                <MessageCircle className="mr-2 h-5 w-5" />
+                WhatsApp
+              </Button>
             </CardContent>
           </Card>
         </CardContent>
       </Card>
-
-      {/* Footer Info */}
-      <div className="mt-8 text-center text-sm text-muted-foreground">
-        <p>
-          Potenciado por inteligencia artificial de Google Gemini para identificar enfermedades y plagas en plantas de
-          manera rápida y precisa.
-        </p>
-      </div>
     </div>
   )
 }

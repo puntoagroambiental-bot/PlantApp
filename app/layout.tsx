@@ -1,4 +1,4 @@
-import type { Metadata } from "next"
+import type { Metadata, Viewport } from "next"
 import { Inter } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
 import "./globals.css"
@@ -31,6 +31,10 @@ export const metadata: Metadata = {
     apple: "/apple-icon.png",
   },
   manifest: "/manifest.json",
+}
+
+/* ✅ AQUÍ VA themeColor */
+export const viewport: Viewport = {
   themeColor: "#4CAF50",
 }
 
@@ -41,10 +45,6 @@ export default function RootLayout({
 }) {
   return (
     <html lang="es">
-      <head>
-        <link rel="manifest" href="/manifest.json" />
-        <meta name="theme-color" content="#4CAF50" />
-      </head>
       <body className={`${inter.className} antialiased`}>
         {children}
         <Analytics />

@@ -1,66 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { z } from "zod";
 import sharp from "sharp";
-
-/* ===============================
-   RATE LIMIT POR IP
-   =============================== */
-
-type UserUsage = {
-  count: number;
-  firstRequestAt: number;
-};
-
-const USER_LIMIT = 2;
-const WINDOW_MS = 60_000;
-const usageMap = new Map<string, UserUsage>();
-
-function checkRateLimit(ip: string) {
-  const now = Date.now();
-  const usage = usageMap.get(ip);
-
-  if (!usage || now - usage.firstRequestAt > WINDOW_MS) {
-    usageMap.set(ip, { count: 1, firstRequestAt: now });
-    return { allowed: true };
-  }
-
-  if (usage.count < USER_LIMIT) {
-    usage.count++;
-    return { allowed: true };
-  }
-
-  return {
-    allowed: false,
-    response: {
-      rateLimited: true,
-      message:
-        "Ya realizaste 2 análisis. Espera 1 minuto o mejora la calidad de la foto.",
-    },
-  };
-}
-
-/* ===============================
-   FILTRO ORGÁNICO
-   =============================== */
-
-const FORBIDDEN_TERMS = [
-  "fungicida",
-  "pesticida",
-  "insecticida",
-  "herbicida",
-  "químico",
-  "quimico",
-  "glifosato",
-  "carbendazim",
-  "clorpirifos",
-  "imidacloprid",
-  "mancozeb",
-];
-
-function containsForbidden(text: string) {
-  const t = text.toLowerCase();
-  return FORBIDDEN_TERMS.some(term => t.includes(term));
-}
+import { z } from "zod";
 
 /* ===============================
    ESQUEMA DE RESPUESTA
@@ -80,60 +20,85 @@ const plantSchema = z.object({
 
 export async function POST(req: Request) {
   try {
-    /* ---------- IP ---------- */
-    const ip =
-      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-      "unknown";
-
-    const limit = checkRateLimit(ip);
-    if (!limit.allowed) {
-      return Response.json(limit.response, { status: 200 });
-    }
-
-    /* ---------- API KEY ---------- */
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       return Response.json(
-        { error: "API key no configurada" },
+        { error: "GEMINI_API_KEY no configurada" },
         { status: 500 }
       );
     }
+
+    let imageBuffer: Buffer | null = null;
+
+    const contentType = req.headers.get("content-type") || "";
+
+    /* =========================================
+       1️⃣ CASO CORRECTO: multipart/form-data
+       ========================================= */
+    if (contentType.includes("multipart/form-data")) {
+      const formData = await req.formData();
+      const file = formData.get("image");
+
+      if (!(file instanceof File)) {
+        return Response.json(
+          { error: "No se recibió archivo de imagen" },
+          { status: 400 }
+        );
+      }
+
+      imageBuffer = Buffer.from(await file.arrayBuffer());
+    }
+
+    /* =========================================
+       2️⃣ RESPALDO: application/json (BASE64)
+       ========================================= */
+    else if (contentType.includes("application/json")) {
+      const body = await req.json();
+      const image = body?.image;
+
+      if (typeof image !== "string") {
+        return Response.json(
+          { error: "Imagen Base64 inválida" },
+          { status: 400 }
+        );
+      }
+
+      const cleaned = image.replace(/^data:image\/\w+;base64,/, "");
+      imageBuffer = Buffer.from(cleaned, "base64");
+    }
+
+    /* =========================================
+       3️⃣ NADA VÁLIDO
+       ========================================= */
+    else {
+      return Response.json(
+        {
+          error:
+            "Content-Type no soportado. Use multipart/form-data o application/json",
+        },
+        { status: 415 }
+      );
+    }
+
+    /* =========================================
+       PROCESAMIENTO DE IMAGEN
+       ========================================= */
+    const normalized = await sharp(imageBuffer)
+      .rotate()
+      .resize(1024, 1024, { fit: "inside" })
+      .jpeg({ quality: 80 })
+      .toBuffer();
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-flash",
     });
 
-    /* ---------- BODY ---------- */
-    const { image } = await req.json();
-
-    if (typeof image !== "string") {
-      return Response.json(
-        { error: "Imagen inválida" },
-        { status: 400 }
-      );
-    }
-
-    /* ---------- LIMPIEZA BASE64 ---------- */
-    const cleaned = image.replace(/^data:image\/\w+;base64,/, "");
-    const buffer = Buffer.from(cleaned, "base64");
-
-    /* ---------- NORMALIZACIÓN (CLAVE PARA CÁMARA) ---------- */
-    const normalized = await sharp(buffer)
-      .rotate()
-      .resize(1024, 1024, { fit: "inside" })
-      .jpeg({ quality: 85 })
-      .toBuffer();
-
-    const base64Image = normalized.toString("base64");
-
-    /* ---------- PROMPT ---------- */
     const prompt = `
 Analiza la planta de la imagen.
 
 Responde SIEMPRE en español.
-
-Devuelve SOLO un JSON con este formato exacto:
+Devuelve SOLO un JSON con este formato:
 
 {
   "disease": string,
@@ -144,48 +109,31 @@ Devuelve SOLO un JSON con este formato exacto:
 }
 
 REGLAS:
-- Tratamientos EXCLUSIVAMENTE orgánicos o naturales
-- NO mencionar químicos ni marcas
-- No agregues texto fuera del JSON
+- Tratamientos exclusivamente orgánicos
+- No mencionar químicos ni marcas
+- No agregar texto fuera del JSON
 `;
 
-    /* ---------- GEMINI ---------- */
     const result = await model.generateContent([
       { text: prompt },
       {
         inlineData: {
           mimeType: "image/jpeg",
-          data: base64Image,
+          data: normalized.toString("base64"),
         },
       },
     ]);
 
     const text = result.response.text();
-
-    /* ---------- PARSEO ---------- */
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-
-    if (start === -1 || end === -1) {
-      throw new Error("Respuesta sin JSON");
-    }
-
-    const parsed = plantSchema.parse(
-      JSON.parse(text.slice(start, end + 1))
-    );
-
-    /* ---------- POST FILTRO ---------- */
-    if (containsForbidden(parsed.treatment)) {
-      parsed.treatment =
-        "Aplicar manejo orgánico: poda sanitaria, mejorar ventilación, extractos de neem, ajo o cola de caballo, y fortalecer el suelo con abonos orgánicos.";
-    }
+    const json = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
+    const parsed = plantSchema.parse(JSON.parse(json));
 
     return Response.json(parsed);
 
   } catch (err) {
-    console.error("❌ Error:", err);
+    console.error("❌ Error en analyze-plant:", err);
     return Response.json(
-      { error: "Error interno del servidor" },
+      { error: "Error interno al analizar la imagen" },
       { status: 500 }
     );
   }
